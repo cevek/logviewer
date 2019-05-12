@@ -16,16 +16,28 @@ function readInt32(data: Uint8Array, from: number) {
     return (data[from] << 24) | (data[from + 1] << 16) | (data[from + 2] << 8) | data[from + 3];
 }
 function writeInt32(data: Uint8Array, from: number, val: number) {
-    data[from] = val << 24;
-    data[from + 1] = val << 16;
-    data[from + 2] = val << 8;
+    data[from] = val >> 24;
+    data[from + 1] = val >> 16;
+    data[from + 2] = val >> 8;
     data[from + 3] = val;
+}
+
+const enum LogStruct {
+    Id = 0,
+    ParentId = 4,
+    LogFilePos = 8,
+    LogFileEnd = 12,
+    Time = 16,
+    Message = 20,
+    Type = 24,
+    Size = 25,
 }
 
 export function createIndex(fileName: string, isActive: boolean) {
     const indexName = fileName.replace(/\.log$/, '.index.dat');
 
     const indexExists = existsSync(indexName);
+    // const indexExists = false;
     let messagesMap: Map<number, string>;
     let chapters: GrowableInt32Array[];
     let logs: GrowableInt32Array;
@@ -66,15 +78,17 @@ export function createIndex(fileName: string, isActive: boolean) {
                 parseJSONValues(
                     buffer,
                     readBytes,
-                    (_type, level, valueHash, start, _end) => {
+                    (_type, level, valueHash, start, end) => {
                         if (level === 1) {
-                            arr[p] = p === 4 ? ISODateToDayMS(buffer, start) : valueHash;
+                            // console.log({p, level, _type, valueHash, start, _end});
+                            arr[p] = p === 2 ? ISODateToDayMS(buffer, start) : valueHash;
                             p++;
-                            if (p === 7) {
-                                logPos = writeLog(arr);
+                            if (p === 4 && !messagesMap.has(valueHash)) {
+                                messagesMap.set(valueHash, Buffer.from(buffer.subarray(start, end)).toString());
                             }
                         }
-                        if (p > 4) {
+                        // message, type
+                        if (p >= 3) {
                             const chapterHash = getIndexHashFromNumber(valueHash);
                             const chapter = chapters[chapterHash];
                             // todo: find same value in last 10 elements
@@ -82,9 +96,11 @@ export function createIndex(fileName: string, isActive: boolean) {
                             chapter.write(logPos);
                         }
                     },
-                    pos => {
+                    size => {
+                        logPos = (logPos + LogStruct.Size) as LogPos;
+                        writeLog(arr, offset as LogFilePos, (offset + size) as LogFilePos);
+                        offset += size;
                         p = 0;
-                        offset += pos;
                     },
                 );
             }
@@ -133,17 +149,6 @@ export function createIndex(fileName: string, isActive: boolean) {
         return logJSON;
     }
 
-    const enum LogStruct {
-        Id = 0,
-        ParentId = 4,
-        LogFilePos = 8,
-        LogFileEnd = 12,
-        Time = 16,
-        Message = 20,
-        Type = 24,
-        Size = 25,
-    }
-
     function findParentPos(logId: LogId, fromPos = logs.getLength() as LogPos): LogPos | undefined {
         for (let i = 1; i < 1000; i++) {
             const pos = (fromPos - i * LogStruct.Size) as LogPos;
@@ -170,16 +175,19 @@ export function createIndex(fileName: string, isActive: boolean) {
         return childLogsPos;
     }
 
-    function writeLog(arr: [LogId, LogId, LogFilePos, LogFilePos, number, number, number]) {
+    function writeLog(
+        arr: [LogId /*id*/, LogId /*parentId*/, number /*time*/, number /*message*/, number /*type*/],
+        jsonStart: LogFilePos,
+        jsonEnd: LogFilePos,
+    ) {
         const logPos = logs.getLength() as LogPos;
         logs.write(arr[0] + logPos + LogStruct.Id);
         logs.write(arr[1] + logPos + LogStruct.ParentId);
-        logs.write(arr[2] + logPos + LogStruct.LogFilePos);
-        logs.write(arr[3] + logPos + LogStruct.LogFileEnd);
-        logs.write(arr[4] + logPos + LogStruct.Time);
-        logs.write(arr[5] + logPos + LogStruct.Message);
-        logs.write(arr[6] + logPos + LogStruct.Type);
-        return logPos;
+        logs.write(jsonStart + logPos + LogStruct.LogFilePos);
+        logs.write(jsonEnd + logPos + LogStruct.LogFileEnd);
+        logs.write(arr[2] + logPos + LogStruct.Time);
+        logs.write(arr[3] + logPos + LogStruct.Message);
+        logs.write(arr[4] + logPos + LogStruct.Type);
     }
 
     function findPath(logJson: LogJSON, pos: LogPos, path: number[]): number[] {
@@ -221,7 +229,8 @@ export function createIndex(fileName: string, isActive: boolean) {
 
         const version = readSize();
         if (version !== 1) throw new Error('no supported index version: ' + version);
-        const messages = JSON.parse(read(readSize()).toString());
+
+        const messages = JSON.parse(read(readSize()).toString('utf8'));
         const date = dateNumberToDate(readSize());
         const logs = createGrowableInt32Array(new Int32Array(read(readSize()).buffer));
         const chapters = [];
@@ -241,7 +250,7 @@ export function createIndex(fileName: string, isActive: boolean) {
             return readInt32(sizeBuffer, 0);
         }
         function read(size: number) {
-            const buffer = new Uint8Array(size);
+            const buffer = Buffer.alloc(size);
             readSync(fd, buffer, 0, buffer.length, offset);
             offset += size;
             return buffer;
@@ -255,22 +264,25 @@ export function createIndex(fileName: string, isActive: boolean) {
         logs: GrowableInt32Array,
         chapters: GrowableInt32Array[],
     ) {
+        // console.log({messages});
         const fd = openSync(file, 'w+');
         const sizeBuffer = new Uint8Array(4);
         let offset = 0;
-        writeSize(1);
+        const version = 1;
+        writeSize(version);
         const messagesBuffer = Buffer.from(JSON.stringify([...messages]));
         writeSize(messagesBuffer.length);
         write(messagesBuffer);
+        writeInt32(sizeBuffer, 0, dateToDateNumber(date));
         writeSize(dateToDateNumber(date));
-        writeSize(logs.getLength());
-        write(new Uint8Array(logs.getArray().subarray(0, logs.getLength()).buffer));
+        writeSize(logs.getLength() * 4);
+        write(logs.getUint8Array());
         const chaptersCount = chapters.length;
         writeSize(chaptersCount);
         for (let i = 0; i < chaptersCount; i++) {
             const chapter = chapters[i];
-            writeSize(chapter.getLength());
-            write(new Uint8Array(chapter.getArray().subarray(0, chapter.getLength()).buffer));
+            writeSize(chapter.getLength() * 4);
+            write(chapter.getUint8Array());
         }
         function writeSize(size: number) {
             writeInt32(sizeBuffer, 0, size);
@@ -278,7 +290,7 @@ export function createIndex(fileName: string, isActive: boolean) {
             offset += 4;
         }
         function write(buffer: Uint8Array) {
-            readSync(fd, buffer, 0, buffer.length, offset);
+            writeSync(fd, buffer, 0, buffer.length, offset);
             offset += buffer.length;
         }
     }

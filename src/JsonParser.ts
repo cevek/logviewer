@@ -122,13 +122,13 @@ function parseKeyword(buffer: Uint8Array, from: number, end: number) {
 }
 
 // function printStr(prefix: string, buffer: Uint8Array, from: number, to: number) {
-//     // console.log(prefix, Buffer.from(buffer.subarray(from, to)).toString());
+//     console.log(prefix, Buffer.from(buffer.subarray(from, to)).toString());
 // }
 export function parseJSONValues(
     buffer: Uint8Array,
-    bufferEnd: number,
-    onValue: (type: 'number' | 'string', level: number, hash: number, pos: number, end: number) => void,
-    onNewJson: (pos: number) => void,
+    bufferEnd: number = buffer.length,
+    onValue: ((type: 'number' | 'string', level: number, hash: number, pos: number, end: number) => void) = () => {},
+    onNewJson: ((size: number) => void) = () => {},
 ) {
     const stack = new Uint8Array(1000) as {[key: number]: StackContext};
     let stackPos = 0;
@@ -160,10 +160,12 @@ export function parseJSONValues(
                 currentContext = StackContext.OBJECT_VALUE;
                 stack[stackPos] = currentContext;
                 break;
-            case Symbols.NEWLINE:
+            case Symbols.NEWLINE: {
+                const prevStart = startJsonPos;
                 startJsonPos = i + 1;
-                onNewJson(startJsonPos);
+                onNewJson(startJsonPos - prevStart);
                 break;
+            }
 
             case Symbols.QUOTE: {
                 const end = parseString(buffer, i + 1, bufferEnd);
@@ -175,6 +177,7 @@ export function parseJSONValues(
                     onValue('string', stackPos, getHash(), i + 1, end);
                 } else {
                     // printStr('str', buffer, i + 1, end);
+                    onValue('string', stackPos, getHash(), i + 1, end);
                 }
                 i = end;
                 break;
@@ -226,6 +229,13 @@ export function parseJSONValues(
 //     Buffer.from(
 //         '{"foo": -123, "bar": [{"x":"0","y":["1","2",null, "3"]}, {"u":[0,1,true],"v":"2"},false], "baz": "hey"}',
 //     ),
+// );
+// parseJSONValues(
+//     Buffer.from('[123456, 0, "2019-05-12T19:08:04.175Z", "info", "Hello", {"name": "app", "version": [1]}]\n'),
+//     undefined,
+//     (...args) => {
+//         console.log(args);
+//     },
 // );
 
 // const json = JSON.stringify([

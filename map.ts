@@ -16,7 +16,7 @@ type Log = {
     parentId: Int32;
     time: Int32;
     message: Int32;
-    type: UInt8;
+    type: Int32;
 };
 type Index = {
     version: Int32;

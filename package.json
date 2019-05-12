@@ -11,6 +11,7 @@
   "license": "ISC",
   "dependencies": {
     "@types/node": "^11.13.8",
-    "murmurhash-native": "^3.3.0"
+    "murmurhash-native": "^3.3.0",
+    "typescript": "^3.4.5"
   }
 }

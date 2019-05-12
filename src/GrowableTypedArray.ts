@@ -10,6 +10,7 @@ export type GrowableUint8Array = {
 export type GrowableInt32Array = {
     ensureFreeSpace: (requestedEnd: number) => void;
     getArray(): Int32Array;
+    getUint8Array(): Uint8Array;
     getLength(): number;
     read(pos: number): number;
     write(val: number, pos?: number): void;
@@ -71,6 +72,9 @@ export function createGrowableInt32Array(initialSize: number | Int32Array, growF
         ensureFreeSpace,
         getArray() {
             return array;
+        },
+        getUint8Array() {
+            return new Uint8Array(array.buffer).subarray(0, length * 4);
         },
         getLength() {
             return length;

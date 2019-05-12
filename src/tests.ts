@@ -1,5 +1,8 @@
+import {createIndex} from './LogIndex';
+
 // import {renameSync, openSync, readSync, writeSync, closeSync} from 'fs';
 
+createIndex('./test.log', false);
 
 // const b = Buffer.from('Hello, everybody, how are you?');
 // addToIndex(b, 1, 0, 5);
