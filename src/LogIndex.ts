@@ -1,4 +1,4 @@
-import {existsSync, openSync, readSync, writeSync} from 'fs';
+import {existsSync, openSync, readSync, writeSync, watchFile, watch} from 'fs';
 import {createGrowableInt32Array, GrowableInt32Array} from './GrowableTypedArray';
 import {parseJSONValues} from './JsonParser';
 import {murmurHash3} from './Murmur';
@@ -46,40 +46,48 @@ export function createIndex(fileName: string, isActive: boolean) {
         date = new Date();
         const fd = openSync(fileName, 'r');
         const buffer = new Uint8Array(50_000_000);
-        let offset = 0;
-        while (true) {
-            const readBytes = readSync(fd, buffer, 0, buffer.length, offset);
-            if (readBytes === 0) break;
-            let arr = [...Array(5)] as Parameters<typeof writeLog>[0];
-            let p = 0;
-            let logPos = 0 as LogPos;
-            parseJSONValues(
-                buffer,
-                readBytes,
-                (_type, level, valueHash, start, _end) => {
-                    if (level === 1) {
-                        arr[p] = p === 4 ? ISODateToDayMS(buffer, start) : valueHash;
-                        p++;
-                    }
-                    if (p > 4) {
-                        const chapterHash = getIndexHashFromNumber(valueHash);
-                        const chapter = chapters[chapterHash];
-                        // todo: find same value in last 10 elements
-                        chapter.write(valueHash);
-                        chapter.write(logPos);
-                    }
-                },
-                pos => {
-                    writeLog(arr);
-                    p = 0;
-                    logPos = pos as LogPos;
-                    offset = logPos;
-                },
-            );
-        }
-
-        if (!isActive) {
+        const arr = [...Array(5)] as Parameters<typeof writeLog>[0];
+        let fileOffset = 0;
+        parse(fileOffset);
+        if (isActive) {
+            watch(fileName, {}, () => {
+                fileOffset = parse(fileOffset);
+            });
+        } else {
             serialize(indexName, date, messagesMap, logs, chapters);
+        }
+        function parse(from: number) {
+            let offset = from;
+            let logPos = 0 as LogPos;
+            let p = 0;
+            while (true) {
+                const readBytes = readSync(fd, buffer, 0, buffer.length, offset);
+                if (readBytes === 0) return offset;
+                parseJSONValues(
+                    buffer,
+                    readBytes,
+                    (_type, level, valueHash, start, _end) => {
+                        if (level === 1) {
+                            arr[p] = p === 4 ? ISODateToDayMS(buffer, start) : valueHash;
+                            p++;
+                            if (p === 7) {
+                                logPos = writeLog(arr);
+                            }
+                        }
+                        if (p > 4) {
+                            const chapterHash = getIndexHashFromNumber(valueHash);
+                            const chapter = chapters[chapterHash];
+                            // todo: find same value in last 10 elements
+                            chapter.write(valueHash);
+                            chapter.write(logPos);
+                        }
+                    },
+                    pos => {
+                        p = 0;
+                        offset += pos;
+                    },
+                );
+            }
         }
     } else {
         const res = deserialize(indexName);
@@ -163,7 +171,7 @@ export function createIndex(fileName: string, isActive: boolean) {
     }
 
     function writeLog(arr: [LogId, LogId, LogFilePos, LogFilePos, number, number, number]) {
-        const logPos = logs.getLength();
+        const logPos = logs.getLength() as LogPos;
         logs.write(arr[0] + logPos + LogStruct.Id);
         logs.write(arr[1] + logPos + LogStruct.ParentId);
         logs.write(arr[2] + logPos + LogStruct.LogFilePos);
