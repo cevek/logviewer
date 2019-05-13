@@ -11,6 +11,35 @@ for (let i = 0; i < 1e6; i++) {
     map[y] = y;
 }
 
+
+function isoDateToInt32(buffer, from) {
+    const year = (buffer[from + 2] - 48) * 10 + (buffer[from + 3] - 48);
+    const month = (buffer[from + 5] - 48) * 10 + (buffer[from + 6] - 48);
+    const day = (buffer[from + 8] - 48) * 10 + (buffer[from + 9] - 48);
+    const hour = (buffer[from + 11] - 48) * 10 + (buffer[from + 12] - 48);
+    const min = (buffer[from + 14] - 48) * 10 + (buffer[from + 15] - 48);
+    const sec = (buffer[from + 17] - 48) * 10 + (buffer[from + 18] - 48);
+    return (
+        year * 12 * 31 * 24 * 60 * 60 + month * 31 * 24 * 60 * 60 + day * 24 * 60 * 60 + hour * 60 * 60 + min * 60 + sec
+    );
+}
+
+function perfDate() {
+    let res;
+    const buffer = ([..."2019-05-13T08:20:58.828Z"].map(ch => ch.charCodeAt(0)))
+    console.time('perfDate');
+    for (let i = 0; i < 1e6; i++) {
+        // res = new Date(1557735818000);
+        // res = i === -1 ? 1: isoDateToInt32(buffer, 0);
+        // res = Date.UTC(2019, 4, 12, 16, 1, 2) / 1000 | 0;
+        res = Date.parse("2019-05-13T08:20:58.828Z");
+    }
+    console.timeEnd('perfDate');
+    return res;
+}
+
+perfDate();
+
 function perf1() {
     let x = 0;
     let res;
@@ -75,7 +104,7 @@ function perf3Read() {
 }
 
 // const map3 = perf3Write();
-const res3 = perf3Read();
+// const res3 = perf3Read();
 // const res = perf2Read();
 // console.log(res);
 // console.log(map3);

@@ -18,7 +18,7 @@ export type GrowableInt32Array = {
 export function createGrowableUint8Array(initialSize: number | Uint8Array, growFactor = 1.5): GrowableUint8Array {
     let array = typeof initialSize === 'number' ? new Uint8Array(initialSize) : initialSize;
     let arrayRealLength = array.length;
-    let length = 0;
+    let length = typeof initialSize === 'number' ? 0 : initialSize.length;
     return {
         ensureFreeSpace(requestedEnd: number) {
             if (requestedEnd >= arrayRealLength) {
@@ -59,7 +59,7 @@ export function createGrowableUint8Array(initialSize: number | Uint8Array, growF
 export function createGrowableInt32Array(initialSize: number | Int32Array, growFactor = 1.5): GrowableInt32Array {
     let array = typeof initialSize === 'number' ? new Int32Array(initialSize) : initialSize;
     let arrayRealLength = array.length;
-    let length = 0;
+    let length = typeof initialSize === 'number' ? 0 : initialSize.length;
     function ensureFreeSpace(requestedEnd: number) {
         if (requestedEnd >= arrayRealLength) {
             const newArray = new Int32Array(requestedEnd * growFactor);
