@@ -3,6 +3,23 @@ import {createGrowableInt32Array, GrowableInt32Array} from './GrowableTypedArray
 import {parseJSONValues} from './JsonParser';
 import {murmurHash3} from './Murmur';
 
+const typesMap = new Map<Hash, TypeId>(
+    ['error', 'warn', 'external', 'info', 'clientError', 'trace'].map((type, i) => [
+        getHashFromValue(type),
+        i as TypeId,
+    ]),
+);
+
+// function getTypeId(typeHash: string) {
+//     return (getHashFromValue(type))!;
+// }
+function mergeTypeWithMsgHash(typeHash: Hash, msgHash: Hash) {
+    return ((msgHash << 3) | typesMap.get(typeHash)!) as Hash;
+}
+function getTypeIdFromMsgWithType(hash: Hash) {
+    return (hash & 0b111) as TypeId;
+}
+
 type JSONLogRow = {
     /**id*/ 0: number;
     /**parentId*/ 1: number;
@@ -16,6 +33,13 @@ type LogPos = {type: 'Pos'} & number;
 type LogFilePos = {type: 'LogFilePos'} & number;
 type DateInt32 = {type: 'DateInt32'} & number;
 type Hash = {type: 'Hash'} & number;
+type TypeId = {type: 'TypeId'} & number;
+
+function getHashFromValue(value: number | string) {
+    const json = JSON.stringify(value + '');
+    const str = json.substr(1, json.length - 2);
+    return murmurHash3(Buffer.from(str), 0, 1) as Hash;
+}
 
 function getChapterHash(num: number) {
     return (num & 1023) as Hash;
@@ -34,6 +58,7 @@ const enum LogStruct {
     Id,
     ParentId,
     DateTime,
+    TypeWithMsg,
     LogFilePos,
     LogFileEnd,
     Size,
@@ -82,7 +107,7 @@ export function createIndex(fileName: string, isActive: boolean) {
     // const messagesReverseMap = new Map([...messagesMap].map(([k, v]) => [v, k]));
     return {
         messagesMap,
-        findValue,
+        findValues,
     };
 
     function parse(from: number) {
@@ -94,6 +119,8 @@ export function createIndex(fileName: string, isActive: boolean) {
             let logId = 0 as LogId;
             let parentLogId = 0 as LogId;
             let date = 0 as DateInt32;
+            let typeHash = 0 as Hash;
+            let messageHash = 0 as Hash;
             if (readBytes === 0) return offset;
             parseJSONValues(
                 readBuffer,
@@ -103,15 +130,9 @@ export function createIndex(fileName: string, isActive: boolean) {
                         if (p === 0) logId = valueHash as LogId;
                         if (p === 1) parentLogId = valueHash as LogId;
                         if (p === 2) date = isoDateToInt32(readBuffer, start) as DateInt32;
-                        if (p === 3 /** type */) addToIndex(valueHash as Hash, logPos);
+                        if (p === 3 /** type */) typeHash = valueHash as Hash;
                         if (p === 4 /** message */) {
-                            if (!messagesMap.has(valueHash as Hash)) {
-                                messagesMap.set(
-                                    valueHash as Hash,
-                                    Buffer.from(readBuffer.subarray(start, end)).toString(),
-                                );
-                            }
-                            addToIndex(valueHash as Hash, logPos);
+                            messageHash = valueHash as Hash;
                         }
                         p++;
                     } else {
@@ -119,11 +140,19 @@ export function createIndex(fileName: string, isActive: boolean) {
                     }
                 },
                 size => {
-                    // console.log('size', offset, size);
-                    logPos = (logPos + LogStruct.Size) as LogPos;
-                    writeLog(logId, parentLogId, date, offset as LogFilePos, (offset + size) as LogFilePos);
+                    const typeWithMsg = mergeTypeWithMsgHash(typeHash, messageHash);
+                    addToIndex(typeWithMsg, logPos);
+                    writeLog(
+                        logId,
+                        parentLogId,
+                        date,
+                        typeWithMsg,
+                        offset as LogFilePos,
+                        (offset + size) as LogFilePos,
+                    );
                     offset += size;
                     p = 0;
+                    logPos = (logPos + LogStruct.Size) as LogPos;
                 },
             );
         }
@@ -155,7 +184,6 @@ export function createIndex(fileName: string, isActive: boolean) {
         const logFileEnd = logs.read(pos + LogStruct.LogFileEnd);
         const buffer = Buffer.alloc(logFileEnd - logFilePos);
         readSync(logFileFd, buffer, 0, buffer.length, logFilePos);
-        const jsonStr = buffer.toString();
         // console.log(jsonStr);
         const jsonData = JSON.parse(buffer.toString()) as JSONLogRow;
         const logJSON: LogJSON = {
@@ -199,6 +227,7 @@ export function createIndex(fileName: string, isActive: boolean) {
         logId: LogId,
         parentLogId: LogId,
         datetime: DateInt32,
+        typeWithMsg: Hash,
         jsonStart: LogFilePos,
         jsonEnd: LogFilePos,
     ) {
@@ -206,6 +235,7 @@ export function createIndex(fileName: string, isActive: boolean) {
         logs.write(logId, logPos + LogStruct.Id);
         logs.write(parentLogId, logPos + LogStruct.ParentId);
         logs.write(datetime, logPos + LogStruct.DateTime);
+        logs.write(typeWithMsg, logPos + LogStruct.TypeWithMsg);
         logs.write(jsonStart, logPos + LogStruct.LogFilePos);
         logs.write(jsonEnd, logPos + LogStruct.LogFileEnd);
     }
@@ -224,28 +254,94 @@ export function createIndex(fileName: string, isActive: boolean) {
         // if (logJson.pos !== pos) throw new Error('LogPath is not found');
         return [];
     }
-    function findValue(value: string | number) {
-        const json = JSON.stringify(value + '');
-        const str = json.substr(1, json.length - 2);
-        const hash = murmurHash3(Buffer.from(str), 0, 1) as Hash;
-        // console.log(hash);
-        return findHash(hash);
+    function findValues({
+        type: typeStr,
+        message: messageStr,
+        value: valueStr,
+        startPos = 0 as LogPos,
+        endPos = logs.getLength() as LogPos,
+        limit = 10,
+    }: {
+        type?: string[];
+        message?: {msg: string; type: string}[];
+        value?: string[];
+        limit?: number;
+        startPos?: LogPos;
+        endPos?: LogPos;
+    }) {
+        const set = new Set<LogPos>();
+        const msgs =
+            messageStr && messageStr.map(m => mergeTypeWithMsgHash(getHashFromValue(m.type), getHashFromValue(m.msg)));
+        const types = typeStr && typeStr.map(type => typesMap.get(getHashFromValue(type))!);
+        const values = valueStr && valueStr.map(getHashFromValue);
+
+        console.log({typeStr, messageStr, valueStr, msgs, types, values});
+        if (values !== undefined) {
+            for (const val of values) {
+                findHashPositions(val, startPos, endPos, logPos => {
+                    let found = true;
+                    if (msgs !== undefined) {
+                        const msg = logs.read(logPos + LogStruct.TypeWithMsg) as Hash;
+                        if (msgs.indexOf(msg) === -1) {
+                            found = false;
+                        }
+                    } else if (types !== undefined) {
+                        const type = getTypeIdFromMsgWithType(logs.read(logPos + LogStruct.TypeWithMsg) as Hash);
+                        if (types.indexOf(type) === -1) {
+                            found = false;
+                        }
+                    }
+                    if (found) {
+                        set.add(logPos);
+                        if (set.size === limit) return false;
+                    }
+                    return true;
+                });
+            }
+        } else if (msgs !== undefined) {
+            for (const msg of msgs) {
+                findHashPositions(msg, startPos, endPos, logPos => {
+                    set.add(logPos);
+                    if (set.size === limit) return false;
+                    return true;
+                });
+            }
+        } else if (types !== undefined) {
+            const arr = logs.getArray();
+            for (let i = endPos as number; i >= startPos; i -= LogStruct.Size) {
+                if (types.indexOf(getTypeIdFromMsgWithType(arr[i + LogStruct.TypeWithMsg] as Hash)) !== -1) {
+                    set.add(i as LogPos);
+                    if (set.size === limit) break;
+                }
+            }
+        }
+
+        const roots: LogJSON[] = [];
+        const rootLogPos = new Set<LogPos>();
+        for (const logPos of set) {
+            const rootPos = findRootParentPos(logPos);
+            if (!rootLogPos.has(rootPos)) {
+                rootLogPos.add(rootPos);
+                roots.push(logToJSON(rootPos));
+            }
+        }
+        return {roots, select: [...set]};
     }
-    function findHash(hash: Hash) {
+
+    function findHashPositions(hash: Hash, startPos: number, endPos: number, callback: (pos: LogPos) => boolean) {
         const chapterHash = getChapterHash(hash);
         const chapter = chapters[chapterHash];
         if (chapter === undefined) return;
         const end = chapter.getLength();
         const arr = chapter.getArray();
-        for (let i = 0; i < end; i += 2) {
+        for (let i = end - 2; i >= 0; i -= 2) {
             if (arr[i] === hash) {
                 const pos = arr[i + 1] as LogPos;
-                const rootPos = findRootParentPos(pos);
-                const rootJson = logToJSON(rootPos);
-                return {root: rootJson, path: findPath(rootJson, pos, [])};
+                // if (endPos < pos) continue;
+                // if (startPos > pos) break;
+                if (!callback(pos)) break;
             }
         }
-        return;
     }
 
     function deserialize(indexFile: string) {

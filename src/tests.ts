@@ -4,7 +4,10 @@ import {createIndex} from './LogIndex';
 
 const index = createIndex('./test.log', false);
 console.log(index.messagesMap);
-console.log(index.findValue('Not found'));
+// console.log(index.findValues({message: [{msg: 'Not found', type: 'warn'}]}));
+// console.log(index.findValues({type: ['info']}));
+// console.log(index.findValues({type: ['warn']}));
+// console.log(index.findValues({value: ['app']}));
 
 // const b = Buffer.from('Hello, everybody, how are you?');
 // addToIndex(b, 1, 0, 5);
