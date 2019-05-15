@@ -1,10 +1,34 @@
 import {createIndex} from './LogIndex';
+import {testSnapshots} from './tests.snapshot';
 
 // import {renameSync, openSync, readSync, writeSync, closeSync} from 'fs';
+function test(name: string, result: object, expected: object) {
+    const resultJSON = JSON.stringify(result, null, 2);
+    const expectedJSON = JSON.stringify(expected, null, 2);
+    if (resultJSON !== expectedJSON) {
+        console.error(`${name}: result !== expected\nResult: ${resultJSON}\nExpected: ${expectedJSON}`);
+    }
+}
 
-const index = createIndex('./test.log', false);
-console.log(index.messagesMap);
-// console.log(index.findValues({message: [{msg: 'Not found', type: 'warn'}]}));
+const index = createIndex('./test.log', {isActive: false, readBufferSize: 100});
+
+test('messages', [...index.messagesMap], [[1407091907, 'Hello'], [1165811057, 'Not found'], [-274802864, 'yeh']]);
+
+test('find by msg: root', index.findValues({message: [{msg: 'Hello', type: 'info'}]}), testSnapshots.findByMsg.root);
+test('find by msg: sub', index.findValues({message: [{msg: 'Not found', type: 'warn'}]}), testSnapshots.findByMsg.sub);
+test(
+    'find by msg: sub sub',
+    index.findValues({message: [{msg: 'yeh', type: 'error'}]}),
+    testSnapshots.findByMsg.subSub,
+);
+test('find by type', index.findValues({type: ['info']}), testSnapshots.findByType.root);
+test('find by type: sub', index.findValues({type: ['warn']}), testSnapshots.findByType.sub);
+test('find by type: sub sub', index.findValues({type: ['error']}), testSnapshots.findByType.subSub);
+
+test('find by value: root', index.findValues({value: ['app']}), testSnapshots.findByType.root);
+test('find by value: sub', index.findValues({value: [1225325]}), testSnapshots.findByType.sub);
+test('find by value: sub sub', index.findValues({value: ['boom']}), testSnapshots.findByType.subSub);
+
 // console.log(index.findValues({type: ['info']}));
 // console.log(index.findValues({type: ['warn']}));
 // console.log(index.findValues({value: ['app']}));

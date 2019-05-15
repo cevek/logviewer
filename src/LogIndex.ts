@@ -73,7 +73,10 @@ type LogJSON = {
     json: object;
 };
 
-export function createIndex(fileName: string, isActive: boolean) {
+export function createIndex(
+    fileName: string,
+    {isActive, readBufferSize = 10_000_000}: {isActive: boolean; readBufferSize?: number},
+) {
     const indexName = fileName.replace(/\.log$/, '.index.dat');
 
     // const indexExists = existsSync(indexName);
@@ -82,7 +85,7 @@ export function createIndex(fileName: string, isActive: boolean) {
     let chapters: GrowableInt32Array[];
     let logs: GrowableInt32Array;
     const logFileFd = openSync(fileName, 'r');
-    const readBuffer = new Uint8Array(50_000_000);
+    const readBuffer = new Uint8Array(readBufferSize);
 
     if (!indexExists) {
         chapters = [...Array(1024)].map(() => createGrowableInt32Array(8));
@@ -113,14 +116,14 @@ export function createIndex(fileName: string, isActive: boolean) {
     function parse(from: number) {
         let offset = from;
         let logPos = 0 as LogPos;
-        let p = 0;
         while (true) {
             const readBytes = readSync(logFileFd, readBuffer, 0, readBuffer.length, offset);
             let logId = 0 as LogId;
             let parentLogId = 0 as LogId;
             let date = 0 as DateInt32;
             let typeHash = 0 as Hash;
-            let messageHash = 0 as Hash;
+            let typeWithMsgHash = 0 as Hash;
+            let p = 0;
             if (readBytes === 0) return offset;
             parseJSONValues(
                 readBuffer,
@@ -132,7 +135,14 @@ export function createIndex(fileName: string, isActive: boolean) {
                         if (p === 2) date = isoDateToInt32(readBuffer, start) as DateInt32;
                         if (p === 3 /** type */) typeHash = valueHash as Hash;
                         if (p === 4 /** message */) {
-                            messageHash = valueHash as Hash;
+                            typeWithMsgHash = mergeTypeWithMsgHash(typeHash, valueHash as Hash);
+                            if (!messagesMap.has(typeWithMsgHash)) {
+                                messagesMap.set(
+                                    typeWithMsgHash,
+                                    JSON.parse('"' + Buffer.from(readBuffer.subarray(start, end)).toString() + '"'),
+                                );
+                            }
+                            addToIndex(typeWithMsgHash, logPos);
                         }
                         p++;
                     } else {
@@ -140,13 +150,11 @@ export function createIndex(fileName: string, isActive: boolean) {
                     }
                 },
                 size => {
-                    const typeWithMsg = mergeTypeWithMsgHash(typeHash, messageHash);
-                    addToIndex(typeWithMsg, logPos);
                     writeLog(
                         logId,
                         parentLogId,
                         date,
-                        typeWithMsg,
+                        typeWithMsgHash,
                         offset as LogFilePos,
                         (offset + size) as LogFilePos,
                     );
@@ -182,6 +190,7 @@ export function createIndex(fileName: string, isActive: boolean) {
         const logId = logs.read(pos) as LogId;
         const logFilePos = logs.read(pos + LogStruct.LogFilePos);
         const logFileEnd = logs.read(pos + LogStruct.LogFileEnd);
+        // console.log(pos, logFilePos, logFileEnd);
         const buffer = Buffer.alloc(logFileEnd - logFilePos);
         readSync(logFileFd, buffer, 0, buffer.length, logFilePos);
         // console.log(jsonStr);
@@ -264,7 +273,7 @@ export function createIndex(fileName: string, isActive: boolean) {
     }: {
         type?: string[];
         message?: {msg: string; type: string}[];
-        value?: string[];
+        value?: (string | number)[];
         limit?: number;
         startPos?: LogPos;
         endPos?: LogPos;
@@ -275,7 +284,7 @@ export function createIndex(fileName: string, isActive: boolean) {
         const types = typeStr && typeStr.map(type => typesMap.get(getHashFromValue(type))!);
         const values = valueStr && valueStr.map(getHashFromValue);
 
-        console.log({typeStr, messageStr, valueStr, msgs, types, values});
+        // console.log({typeStr, messageStr, valueStr, msgs, types, values});
         if (values !== undefined) {
             for (const val of values) {
                 findHashPositions(val, startPos, endPos, logPos => {
@@ -301,6 +310,7 @@ export function createIndex(fileName: string, isActive: boolean) {
         } else if (msgs !== undefined) {
             for (const msg of msgs) {
                 findHashPositions(msg, startPos, endPos, logPos => {
+                    // console.log('s', logPos);
                     set.add(logPos);
                     if (set.size === limit) return false;
                     return true;
@@ -308,7 +318,9 @@ export function createIndex(fileName: string, isActive: boolean) {
             }
         } else if (types !== undefined) {
             const arr = logs.getArray();
-            for (let i = endPos as number; i >= startPos; i -= LogStruct.Size) {
+            // console.log({endPos, startPos, types});
+            for (let i = endPos - LogStruct.Size; i >= startPos; i -= LogStruct.Size) {
+                // console.log(i, getTypeIdFromMsgWithType(arr[i + LogStruct.TypeWithMsg] as Hash));
                 if (types.indexOf(getTypeIdFromMsgWithType(arr[i + LogStruct.TypeWithMsg] as Hash)) !== -1) {
                     set.add(i as LogPos);
                     if (set.size === limit) break;
@@ -320,6 +332,7 @@ export function createIndex(fileName: string, isActive: boolean) {
         const rootLogPos = new Set<LogPos>();
         for (const logPos of set) {
             const rootPos = findRootParentPos(logPos);
+            // if (rootPos === logPos) continue;
             if (!rootLogPos.has(rootPos)) {
                 rootLogPos.add(rootPos);
                 roots.push(logToJSON(rootPos));
@@ -334,11 +347,12 @@ export function createIndex(fileName: string, isActive: boolean) {
         if (chapter === undefined) return;
         const end = chapter.getLength();
         const arr = chapter.getArray();
+        // console.log(arr);
         for (let i = end - 2; i >= 0; i -= 2) {
             if (arr[i] === hash) {
                 const pos = arr[i + 1] as LogPos;
-                // if (endPos < pos) continue;
-                // if (startPos > pos) break;
+                if (endPos < pos) continue;
+                if (startPos > pos) break;
                 if (!callback(pos)) break;
             }
         }
